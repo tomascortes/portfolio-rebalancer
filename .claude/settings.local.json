@@ -5,7 +5,12 @@
       "Bash(python3 -m pytest:*)",
       "Bash(pip3 install:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "WebFetch(domain:fintual.cl)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:oaestay.github.io)",
+      "WebFetch(domain:engineering.fintual.cl)"
     ]
   }
 }

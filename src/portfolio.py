@@ -1,7 +1,14 @@
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from .models import Stock, RebalanceOrder
+from .optimizers import (
+    SimpleRebalanceStrategy,
+    TrackingErrorStrategy,
+    TradeMinimizationStrategy,
+)
+
+StrategyName = Literal["simple", "tracking_error", "trade_minimization"]
 
 
 class Portfolio:
@@ -50,73 +57,44 @@ class Portfolio:
             for symbol, stock in self.holdings.items()
         }
 
-    def rebalance(self, price_lookup: Optional[dict[str, Decimal]] = None) -> list[RebalanceOrder]:
-        """Calculate orders needed to rebalance portfolio to target allocation."""
+    def rebalance(
+        self,
+        price_lookup: Optional[dict[str, Decimal]] = None,
+        strategy: StrategyName = "simple",
+    ) -> list[RebalanceOrder]:
+        """Calculate orders needed to rebalance portfolio to target allocation.
+
+        Args:
+            price_lookup: Prices for symbols not in holdings.
+            strategy: Rebalancing strategy to use:
+                - "simple": Floor division (default, fast)
+                - "tracking_error": Minimize deviation from target allocation (L1 norm)
+                - "trade_minimization": Minimize number of shares traded
+
+        Returns:
+            List of RebalanceOrder objects.
+        """
         if not self.target_allocation:
             raise ValueError("No target allocation set. Call set_target_allocation() first.")
 
-        price_lookup = price_lookup or {}
-        orders: list[RebalanceOrder] = []
         total = self.total_value()
-
         if total == 0:
             return []  # Can't rebalance an empty portfolio
 
-        # Step 1: Process target allocation symbols
-        for symbol, target_pct in self.target_allocation.items():
-            target_value = total * target_pct
+        strategies = {
+            "simple": SimpleRebalanceStrategy,
+            "tracking_error": TrackingErrorStrategy,
+            "trade_minimization": TradeMinimizationStrategy,
+        }
 
-            # Get current value (0 if not held)
-            if symbol in self.holdings:
-                current_value = self.holdings[symbol].market_value
-                price = self.holdings[symbol].current_price
-            elif symbol in price_lookup:
-                current_value = Decimal("0")
-                price = price_lookup[symbol]
-            else:
-                raise ValueError(
-                    f"Symbol {symbol} in target allocation but not in holdings "
-                    f"and no price provided in price_lookup"
-                )
+        strategy_cls = strategies.get(strategy)
+        if strategy_cls is None:
+            raise ValueError(f"Unknown strategy: {strategy}")
 
-            delta_dollars = target_value - current_value
-
-            if delta_dollars == 0:
-                continue  # Already at target
-
-            shares = int(abs(delta_dollars) // price)
-
-            if shares == 0:
-                continue  # Delta too small to trade even 1 share
-
-            actual_amount = Decimal(shares) * price
-            target_amount = abs(delta_dollars)
-            deviation = target_amount - actual_amount
-
-            action: str = "BUY" if delta_dollars > 0 else "SELL"
-
-            orders.append(RebalanceOrder(
-                action=action,  # type: ignore[arg-type]
-                symbol=symbol,
-                shares=shares,
-                dollar_amount=actual_amount,
-                target_dollars=target_amount,
-                deviation_dollars=deviation
-            ))
-
-        # Step 2: Sell holdings not in target allocation
-        for symbol, stock in self.holdings.items():
-            if symbol not in self.target_allocation and stock.quantity > 0:
-                orders.append(RebalanceOrder(
-                    action="SELL",
-                    symbol=symbol,
-                    shares=stock.quantity,
-                    dollar_amount=stock.market_value,
-                    target_dollars=stock.market_value,  # Selling all = no deviation
-                    deviation_dollars=Decimal("0")
-                ))
-
-        return orders
+        strategy_instance = strategy_cls()
+        return strategy_instance.calculate_orders(
+            self.holdings, self.target_allocation, total, price_lookup
+        )
 
     @classmethod
     def from_url(cls, url: str, name: str) -> "Portfolio":
