@@ -222,9 +222,3 @@ class TestRebalance:
 
         meta_orders = [o for o in orders if o.symbol == "META"]
         assert len(meta_orders) == 0
-
-
-class TestPortfolioFromUrl:
-    def test_from_url_not_implemented(self):
-        with pytest.raises(NotImplementedError):
-            Portfolio.from_url("https://fintual.cl", "Risky Norris")

@@ -1,16 +1,3 @@
-"""
-Portfolio Rebalancer - A tool for calculating buy/sell orders to rebalance stock portfolios.
-
-Exports:
-    Stock: Dataclass representing a stock holding
-    RebalanceOrder: Dataclass representing a buy/sell order with deviation tracking
-    Portfolio: Main class for managing holdings and calculating rebalance orders
-    RebalanceStrategy: Abstract base class for rebalancing strategies
-    SimpleRebalanceStrategy: Floor division rebalancing (default)
-    TrackingErrorStrategy: Minimize tracking error via MILP
-    TradeMinimizationStrategy: Minimize trades via MILP
-"""
-
 from .models import Stock, RebalanceOrder
 from .portfolio import Portfolio
 from .optimizers import (
@@ -19,6 +6,8 @@ from .optimizers import (
     TrackingErrorStrategy,
     TradeMinimizationStrategy,
 )
+from .config import FintualFund, FintualConfig
+from .loaders import load_fintual_allocation, load_from_url
 
 __all__ = [
     "Stock",
@@ -28,4 +17,8 @@ __all__ = [
     "SimpleRebalanceStrategy",
     "TrackingErrorStrategy",
     "TradeMinimizationStrategy",
+    "FintualFund",
+    "FintualConfig",
+    "load_fintual_allocation",
+    "load_from_url",
 ]

@@ -37,11 +37,6 @@ class TradeMinimizationStrategy(RebalanceStrategy):
     """Minimize number of trades while staying within tolerance band."""
 
     def __init__(self, tolerance: Decimal = Decimal("0.02")):
-        """Initialize with tolerance band.
-
-        Args:
-            tolerance: Allowed deviation from target weight (default 2%).
-        """
         self.tolerance = tolerance
 
     def calculate_orders(
@@ -56,154 +51,59 @@ class TradeMinimizationStrategy(RebalanceStrategy):
         if total_value == 0:
             return []
 
-        # Collect all symbols and their prices
         symbols = list(target_allocation.keys())
         n = len(symbols)
 
-        prices = []
-        current_holdings = []
-        target_weights = []
-
-        for symbol in symbols:
-            if symbol in holdings:
-                price = float(holdings[symbol].current_price)
-                current_qty = holdings[symbol].quantity
-            elif symbol in price_lookup:
-                price = float(price_lookup[symbol])
-                current_qty = 0
-            else:
-                raise ValueError(
-                    f"Symbol {symbol} in target allocation but not in holdings "
-                    f"and no price provided in price_lookup"
-                )
-
-            prices.append(price)
-            current_holdings.append(current_qty)
-            target_weights.append(float(target_allocation[symbol]))
-
-        prices = np.array(prices)
-        current_holdings = np.array(current_holdings)
-        target_weights = np.array(target_weights)
+        prices, current_holdings = self._collect_symbol_data(
+            symbols, holdings, price_lookup
+        )
+        target_weights = np.array([float(target_allocation[s]) for s in symbols])
         V = float(total_value)
         tol = float(self.tolerance)
 
-        # Variables: [x_1, ..., x_n, t_plus_1, ..., t_plus_n, t_minus_1, ..., t_minus_n]
-        # x = shares to hold (integer)
-        # t_plus = shares to buy (integer)
-        # t_minus = shares to sell (integer)
-
-        # Objective: minimize sum(t_plus) + sum(t_minus)
+        # Variables: [x_1..x_n, t_plus_1..t_plus_n, t_minus_1..t_minus_n]
         c = np.zeros(3 * n)
-        c[n : 2 * n] = 1.0  # t_plus coefficients
-        c[2 * n : 3 * n] = 1.0  # t_minus coefficients
+        c[n:] = 1.0  # minimize sum(t_plus) + sum(t_minus)
 
-        # Constraint 1: Trade balance
-        # x[i] - h[i] = t_plus[i] - t_minus[i]
-        # => x[i] - t_plus[i] + t_minus[i] = h[i]
+        # Trade balance: x[i] - t_plus[i] + t_minus[i] = h[i]
         A_trade = np.zeros((n, 3 * n))
         for i in range(n):
-            A_trade[i, i] = 1.0  # x[i] coefficient
-            A_trade[i, n + i] = -1.0  # t_plus[i] coefficient
-            A_trade[i, 2 * n + i] = 1.0  # t_minus[i] coefficient
+            A_trade[i, i] = 1.0
+            A_trade[i, n + i] = -1.0
+            A_trade[i, 2 * n + i] = 1.0
 
-        trade_constraint = LinearConstraint(A_trade, current_holdings, current_holdings)
+        # Tolerance band: (w[i] - tol) * V <= x[i] * p[i] <= (w[i] + tol) * V
+        A_tolerance = np.zeros((n, 3 * n))
+        np.fill_diagonal(A_tolerance, prices)
 
-        # Constraint 2: Tolerance band (lower bound)
-        # (w[i] - tol) * V <= x[i] * p[i]
-        # => x[i] * p[i] >= (w[i] - tol) * V
-        A_lower = np.zeros((n, 3 * n))
-        for i in range(n):
-            A_lower[i, i] = prices[i]
-
-        lower_bounds = np.maximum((target_weights - tol) * V, 0)
-        tolerance_lower = LinearConstraint(A_lower, lower_bounds, np.full(n, np.inf))
-
-        # Constraint 3: Tolerance band (upper bound)
-        # x[i] * p[i] <= (w[i] + tol) * V
-        A_upper = np.zeros((n, 3 * n))
-        for i in range(n):
-            A_upper[i, i] = prices[i]
-
-        upper_bounds = (target_weights + tol) * V
-        tolerance_upper = LinearConstraint(A_upper, -np.full(n, np.inf), upper_bounds)
-
-        # Constraint 4: Budget constraint
-        # sum(x[i] * p[i]) <= V
         A_budget = np.zeros((1, 3 * n))
         A_budget[0, :n] = prices
-        budget_constraint = LinearConstraint(A_budget, -np.inf, V)
-
-        # Bounds: x >= 0, t_plus >= 0, t_minus >= 0
-        lower = np.zeros(3 * n)
-        upper = np.full(3 * n, np.inf)
-        bounds = Bounds(lower, upper)
-
-        # Integrality: all variables are integers
-        integrality = np.ones(3 * n, dtype=int)
 
         result = milp(
             c=c,
-            constraints=[trade_constraint, tolerance_lower, tolerance_upper, budget_constraint],
-            integrality=integrality,
-            bounds=bounds,
+            constraints=[
+                LinearConstraint(A_trade, current_holdings, current_holdings),
+                LinearConstraint(
+                    A_tolerance,
+                    np.maximum((target_weights - tol) * V, 0),
+                    (target_weights + tol) * V,
+                ),
+                LinearConstraint(A_budget, -np.inf, V),
+            ],
+            integrality=np.ones(3 * n, dtype=int),
+            bounds=Bounds(np.zeros(3 * n), np.full(3 * n, np.inf)),
         )
 
         if not result.success:
-            # Fall back to simple strategy if optimization fails
             from .simple import SimpleRebalanceStrategy
 
             return SimpleRebalanceStrategy().calculate_orders(
                 holdings, target_allocation, total_value, price_lookup
             )
 
-        # Extract solution
-        x_optimal = np.round(result.x[:n]).astype(int)
-
-        # Build orders
-        orders: list[RebalanceOrder] = []
-
-        for i, symbol in enumerate(symbols):
-            target_shares = int(x_optimal[i])
-            current_qty = int(current_holdings[i])
-            delta = target_shares - current_qty
-
-            if delta == 0:
-                continue
-
-            price = Decimal(str(prices[i]))
-            shares = abs(delta)
-            actual_amount = Decimal(shares) * price
-
-            # Calculate target and deviation for the order
-            target_dollar_value = Decimal(str(target_weights[i])) * total_value
-            actual_dollar_value = Decimal(target_shares) * price
-            deviation = abs(target_dollar_value - actual_dollar_value)
-
-            action = "BUY" if delta > 0 else "SELL"
-
-            orders.append(
-                RebalanceOrder(
-                    action=action,  # type: ignore[arg-type]
-                    symbol=symbol,
-                    shares=shares,
-                    dollar_amount=actual_amount,
-                    target_dollars=abs(target_dollar_value - Decimal(current_qty) * price),
-                    deviation_dollars=deviation,
-                )
-            )
-
-        # Sell holdings not in target allocation
-        for symbol, stock in holdings.items():
-            if symbol not in target_allocation and stock.quantity > 0:
-                orders.append(
-                    RebalanceOrder(
-                        action="SELL",
-                        symbol=symbol,
-                        shares=stock.quantity,
-                        dollar_amount=stock.market_value,
-                        target_dollars=stock.market_value,
-                        deviation_dollars=Decimal("0"),
-                    )
-                )
-
-        return orders
+        optimal_shares = np.round(result.x[:n]).astype(int)
+        orders = self._orders_from_solution(
+            symbols, prices, current_holdings, optimal_shares,
+            target_allocation, total_value,
+        )
+        return orders + self._liquidation_orders(holdings, target_allocation)

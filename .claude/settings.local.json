@@ -10,7 +10,10 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:oaestay.github.io)",
-      "WebFetch(domain:engineering.fintual.cl)"
+      "WebFetch(domain:engineering.fintual.cl)",
+      "WebFetch(domain:portfolioslab.com)",
+      "WebFetch(domain:ayuda.fintual.cl)",
+      "Bash(uv sync:*)"
     ]
   }
 }

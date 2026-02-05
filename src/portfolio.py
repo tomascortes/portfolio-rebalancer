@@ -97,8 +97,22 @@ class Portfolio:
         )
 
     @classmethod
-    def from_url(cls, url: str, name: str) -> "Portfolio":
-        raise NotImplementedError("Web loading not yet implemented.")
+    def from_url(cls, url: str, name: str = "") -> "Portfolio":
+        """Create a Portfolio with target allocation loaded from a URL.
+
+        Args:
+            url: URL to scrape allocation from (e.g., https://fintual.cl/risky-norris).
+            name: Optional portfolio name (currently unused).
+
+        Returns:
+            Portfolio instance with target allocation set from the scraped data.
+        """
+        from .loaders import load_from_url
+
+        allocation = load_from_url(url)
+        portfolio = cls()
+        portfolio.set_target_allocation(allocation)
+        return portfolio
 
     def __repr__(self) -> str:
         return (
