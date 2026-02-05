@@ -6,8 +6,7 @@ from .optimizers import (
     TrackingErrorStrategy,
     TradeMinimizationStrategy,
 )
-from .config import FintualFund, FintualConfig
-from .loaders import load_fintual_allocation, load_from_url
+from .config import FintualFund
 
 __all__ = [
     "Stock",
@@ -18,7 +17,4 @@ __all__ = [
     "TrackingErrorStrategy",
     "TradeMinimizationStrategy",
     "FintualFund",
-    "FintualConfig",
-    "load_fintual_allocation",
-    "load_from_url",
 ]
