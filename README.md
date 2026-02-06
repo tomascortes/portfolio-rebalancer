@@ -2,9 +2,6 @@
 
 Calculate buy/sell orders to rebalance a portfolio of Fintual ETFs. Three optimization strategies, live price fetching, interactive CLI.
 
----
-
----
 
 ## Prerequisites
 
@@ -24,9 +21,19 @@ Prices are fetched live from the Fintual API on startup. If the API is unreachab
 
 1. **Pick a portfolio** — arrow keys to browse the four Fintual funds. A live preview above the menu shows each fund's ETFs, target allocation, and current price.
 
+https://github.com/user-attachments/assets/07353d7a-8b13-4322-8ae4-610aff71f835
+
 2. **Pick a strategy** — choose how the optimizer calculates the trades.
 
+
+https://github.com/user-attachments/assets/537e50b5-7bf9-4587-8ebd-dc4bd08d909b
+
+
 3. **See the orders** — current holdings, the rebalance orders, and the resulting holdings after applying them.
+
+https://github.com/user-attachments/assets/2a6e3901-5d03-40f5-8189-390f5b04db6c
+
+
 
 ## Modules
 
