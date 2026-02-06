@@ -1,27 +1,36 @@
-"""Tracking error minimization strategy using MILP optimization.
-
-Mathematical Formulation (L1 norm minimization):
-
-    minimize: sum(e_plus[i] + e_minus[i])
-
-    subject to:
-        x[i] * p[i] - w[i] * V = e_plus[i] - e_minus[i]   (deviation balance)
-        sum(x[i] * p[i]) <= V                              (budget constraint)
-        x[i] >= 0, integer                                 (whole shares, no shorting)
-        e_plus[i], e_minus[i] >= 0                         (slack variables)
-
-    where:
-        x[i]     = shares of asset i (decision variable)
-        p[i]     = price per share of asset i
-        w[i]     = target weight for asset i
-        V        = total portfolio value
-        e_plus   = positive deviation (under-allocated)
-        e_minus  = negative deviation (over-allocated)
-
-This strategy minimizes the total absolute deviation from target allocations,
-producing a portfolio that tracks the target weights as closely as possible
-while respecting the whole-share constraint.
 """
+Tracking error minimization strategy using MILP optimization (L1 norm).
+
+The objective is to track a target portfolio allocation as closely as possible
+in dollar terms, subject to whole-share and budget constraints.
+
+Mathematical formulation:
+
+Let:
+    x[i] = number of shares of asset i (decision variable)
+    p[i] = price per share of asset i
+    w[i] = target portfolio weight of asset i
+    V    = total portfolio value
+    T[i] = w[i] * V = target dollar allocation for asset i
+
+Decision variables:
+    x[i]      >= 0, integer   (whole shares, no shorting)
+    e_plus[i] >= 0            (positive deviation: under-allocation)
+    e_minus[i]>= 0            (negative deviation: over-allocation)
+
+Objective:
+    minimize  sum_i (e_plus[i] + e_minus[i])
+
+Subject to:
+    p[i] * x[i] - T[i] = e_plus[i] - e_minus[i]   (tracking error balance)
+    sum_i (p[i] * x[i]) <= V                      (budget constraint)
+
+This formulation minimizes the total absolute deviation between the actual
+dollar allocation and the target dollar allocation for each asset, producing
+a portfolio that closely tracks the desired weights while respecting the
+whole-share constraint.
+"""
+
 
 from decimal import Decimal
 
@@ -34,6 +43,37 @@ from .base import RebalanceStrategy
 
 class TrackingErrorStrategy(RebalanceStrategy):
     """Minimize tracking error (L1 deviation from target) using MILP."""
+
+    def _build_objective_coefficients(self, n: int) -> np.ndarray:
+        """Build objective: minimize sum(e_plus) + sum(e_minus)."""
+        c = np.zeros(3 * n)
+        c[n:] = 1.0
+        return c
+
+    def _build_deviation_balance_matrix(
+        self, n: int, prices: np.ndarray
+    ) -> np.ndarray:
+        """Build matrix for: p[i]*x[i] - e_plus[i] + e_minus[i] = target[i]."""
+        A = np.zeros((n, 3 * n))
+        for i in range(n):
+            A[i, i] = prices[i]
+            A[i, n + i] = -1.0
+            A[i, 2 * n + i] = 1.0
+        return A
+
+    def _build_budget_constraint_matrix(
+        self, n: int, prices: np.ndarray
+    ) -> np.ndarray:
+        """Build matrix for: sum(p[i]*x[i]) <= V."""
+        A = np.zeros((1, 3 * n))
+        A[0, :n] = prices
+        return A
+
+    def _build_integrality_constraints(self, n: int) -> np.ndarray:
+        """Only share counts (x) are integers; deviations are continuous."""
+        integrality = np.zeros(3 * n, dtype=int)
+        integrality[:n] = 1
+        return integrality
 
     def calculate_orders(
         self,
@@ -58,30 +98,21 @@ class TrackingErrorStrategy(RebalanceStrategy):
         )
         V = float(total_value)
 
-        # Variables: [x_1..x_n, e_plus_1..e_plus_n, e_minus_1..e_minus_n]
-        c = np.zeros(3 * n)
-        c[n:] = 1.0  # minimize sum(e_plus) + sum(e_minus)
-
-        # Deviation balance: p[i]*x[i] - e_plus[i] + e_minus[i] = target[i]
-        A_eq = np.zeros((n, 3 * n))
-        for i in range(n):
-            A_eq[i, i] = prices[i]
-            A_eq[i, n + i] = -1.0
-            A_eq[i, 2 * n + i] = 1.0
-
-        A_budget = np.zeros((1, 3 * n))
-        A_budget[0, :n] = prices
-
-        integrality = np.zeros(3 * n, dtype=int)
-        integrality[:n] = 1  # only share counts are integers
-
         result = milp(
-            c=c,
+            c=self._build_objective_coefficients(n),
             constraints=[
-                LinearConstraint(A_eq, target_values, target_values),
-                LinearConstraint(A_budget, -np.inf, V),
+                LinearConstraint(
+                    self._build_deviation_balance_matrix(n, prices),
+                    target_values,
+                    target_values,
+                ),
+                LinearConstraint(
+                    self._build_budget_constraint_matrix(n, prices),
+                    -np.inf,
+                    V,
+                ),
             ],
-            integrality=integrality,
+            integrality=self._build_integrality_constraints(n),
             bounds=Bounds(np.zeros(3 * n), np.full(3 * n, np.inf)),
         )
 

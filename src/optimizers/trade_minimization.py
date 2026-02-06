@@ -1,27 +1,39 @@
-"""Trade minimization strategy using MILP optimization.
+"""
+Trade minimization strategy using MILP optimization.
 
-Mathematical Formulation:
+The objective is to minimize the number of distinct assets traded (i.e., assets
+with any buy or sell activity) while ensuring the final portfolio allocation
+stays within a tolerance band around the target weights.
 
-    minimize: sum(t_plus[i] + t_minus[i])
+Mathematical formulation:
 
-    subject to:
-        x[i] - h[i] = t_plus[i] - t_minus[i]              (trade balance)
-        (w[i] - tol) * V <= x[i] * p[i] <= (w[i] + tol) * V   (tolerance band)
-        sum(x[i] * p[i]) <= V                              (budget constraint)
-        x[i], t_plus[i], t_minus[i] >= 0, integer          (whole shares)
+Let:
+    x[i] = final number of shares of asset i (decision variable)
+    h[i] = current holdings of asset i
+    p[i] = price per share of asset i
+    w[i] = target portfolio weight of asset i
+    V    = total portfolio value
+    tol  = tolerance around target weights
+    M    = big-M constant (upper bound on possible traded shares)
 
-    where:
-        x[i]     = shares of asset i to hold (decision variable)
-        h[i]     = current holdings of asset i
-        p[i]     = price per share of asset i
-        w[i]     = target weight for asset i
-        V        = total portfolio value
-        tol      = tolerance (default 2%)
-        t_plus   = shares to buy
-        t_minus  = shares to sell
+Decision variables:
+    x[i]       >= 0, integer   (final shares to hold)
+    t_plus[i]  >= 0, integer   (shares bought)
+    t_minus[i] >= 0, integer   (shares sold)
+    y[i]       in {0, 1}       (1 if asset i is traded, 0 otherwise)
 
-This strategy minimizes the total number of shares traded while keeping
-allocations within a tolerance band of the target weights.
+Objective:
+    minimize  sum_i y[i]
+
+Subject to:
+    x[i] = h[i] + t_plus[i] - t_minus[i]              (trade balance)
+    t_plus[i] + t_minus[i] <= M * y[i]                (trade indicator linking)
+    (w[i] - tol) * V <= x[i] * p[i] <= (w[i] + tol) * V   (value-based tolerance band)
+    sum_i (x[i] * p[i]) <= V                          (budget constraint)
+
+This formulation minimizes the number of assets that require trading, regardless
+of trade size, while ensuring the resulting portfolio remains close to the
+target allocation in dollar terms.
 """
 
 from decimal import Decimal
@@ -34,7 +46,7 @@ from .base import RebalanceStrategy
 
 
 class TradeMinimizationStrategy(RebalanceStrategy):
-    """Minimize number of trades while staying within tolerance band."""
+    """Minimize number of distinct trades while staying within tolerance band."""
 
     def __init__(self, tolerance: Decimal = Decimal("0.02")):
         self.tolerance = tolerance
@@ -61,43 +73,23 @@ class TradeMinimizationStrategy(RebalanceStrategy):
         V = float(total_value)
         tol = float(self.tolerance)
 
-        # Variables: [x_1..x_n, t_plus_1..t_plus_n, t_minus_1..t_minus_n]
-        c = np.zeros(3 * n)
-        c[n:] = 1.0  # minimize sum(t_plus) + sum(t_minus)
-
-        # Trade balance: x[i] - t_plus[i] + t_minus[i] = h[i]
-        A_trade = np.zeros((n, 3 * n))
-        for i in range(n):
-            A_trade[i, i] = 1.0
-            A_trade[i, n + i] = -1.0
-            A_trade[i, 2 * n + i] = 1.0
-
-        # Tolerance band: (w[i] - tol) * V <= x[i] * p[i] <= (w[i] + tol) * V
-        A_tolerance = np.zeros((n, 3 * n))
-        np.fill_diagonal(A_tolerance, prices)
-
-        A_budget = np.zeros((1, 3 * n))
-        A_budget[0, :n] = prices
+        M = self._compute_big_m(V, prices)
+        num_vars = 4 * n
 
         result = milp(
-            c=c,
+            c=self._build_objective(n),
             constraints=[
-                LinearConstraint(A_trade, current_holdings, current_holdings),
-                LinearConstraint(
-                    A_tolerance,
-                    np.maximum((target_weights - tol) * V, 0),
-                    (target_weights + tol) * V,
-                ),
-                LinearConstraint(A_budget, -np.inf, V),
+                self._build_trade_balance_constraint(n, current_holdings),
+                self._build_indicator_constraint(n, M),
+                self._build_tolerance_constraint(n, prices, target_weights, tol, V),
+                self._build_budget_constraint(n, prices, V),
             ],
-            integrality=np.ones(3 * n, dtype=int),
-            bounds=Bounds(np.zeros(3 * n), np.full(3 * n, np.inf)),
+            integrality=np.ones(num_vars, dtype=int),
+            bounds=self._build_variable_bounds(num_vars, n),
         )
 
         if not result.success:
-            from .simple import SimpleRebalanceStrategy
-
-            return SimpleRebalanceStrategy().calculate_orders(
+            return self._fallback_to_simple_strategy(
                 holdings, target_allocation, total_value, price_lookup
             )
 
@@ -107,3 +99,64 @@ class TradeMinimizationStrategy(RebalanceStrategy):
             target_allocation, total_value,
         )
         return orders + self._liquidation_orders(holdings, target_allocation)
+
+    def _build_objective(self, n: int) -> np.ndarray:
+        c = np.zeros(4 * n)
+        c[3 * n:] = 1.0
+        return c
+
+    def _compute_big_m(self, V: float, prices: np.ndarray) -> float:
+        min_price = max(prices.min(), 0.01)
+        return 2 * V / min_price
+
+    def _build_trade_balance_constraint(
+        self, n: int, current_holdings: np.ndarray
+    ) -> LinearConstraint:
+        A = np.zeros((n, 4 * n))
+        idx = np.arange(n)
+        A[idx, idx] = 1.0
+        A[idx, n + idx] = -1.0
+        A[idx, 2 * n + idx] = 1.0
+        return LinearConstraint(A, current_holdings, current_holdings)
+
+    def _build_indicator_constraint(self, n: int, M: float) -> LinearConstraint:
+        A = np.zeros((n, 4 * n))
+        idx = np.arange(n)
+        A[idx, n + idx] = 1.0
+        A[idx, 2 * n + idx] = 1.0
+        A[idx, 3 * n + idx] = -M
+        return LinearConstraint(A, -np.inf, np.zeros(n))
+
+    def _build_tolerance_constraint(
+        self, n: int, prices: np.ndarray, target_weights: np.ndarray, tol: float, V: float
+    ) -> LinearConstraint:
+        A = np.zeros((n, 4 * n))
+        np.fill_diagonal(A, prices)
+        lower = np.maximum((target_weights - tol) * V, 0)
+        upper = (target_weights + tol) * V
+        return LinearConstraint(A, lower, upper)
+
+    def _build_budget_constraint(
+        self, n: int, prices: np.ndarray, V: float
+    ) -> LinearConstraint:
+        A = np.zeros((1, 4 * n))
+        A[0, :n] = prices
+        return LinearConstraint(A, -np.inf, V)
+
+    def _build_variable_bounds(self, num_vars: int, n: int) -> Bounds:
+        lower = np.zeros(num_vars)
+        upper = np.full(num_vars, np.inf)
+        upper[3 * n:] = 1.0
+        return Bounds(lower, upper)
+
+    def _fallback_to_simple_strategy(
+        self,
+        holdings: dict[str, Stock],
+        target_allocation: dict[str, Decimal],
+        total_value: Decimal,
+        price_lookup: dict[str, Decimal] | None,
+    ) -> list[RebalanceOrder]:
+        from .simple import SimpleRebalanceStrategy
+        return SimpleRebalanceStrategy().calculate_orders(
+            holdings, target_allocation, total_value, price_lookup
+        )
