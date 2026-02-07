@@ -61,6 +61,7 @@ class Portfolio:
         self,
         price_lookup: Optional[dict[str, Decimal]] = None,
         strategy: StrategyName = "simple",
+        extra_cash: Decimal = Decimal("0"),
     ) -> list[RebalanceOrder]:
         """Calculate orders needed to rebalance portfolio to target allocation.
 
@@ -92,6 +93,11 @@ class Portfolio:
             raise ValueError(f"Unknown strategy: {strategy}")
 
         strategy_instance = strategy_cls()
+        if isinstance(strategy_instance, TradeMinimizationStrategy):
+            return strategy_instance.calculate_orders(
+                self.holdings, self.target_allocation, total, price_lookup,
+                extra_cash=extra_cash,
+            )
         return strategy_instance.calculate_orders(
             self.holdings, self.target_allocation, total, price_lookup
         )

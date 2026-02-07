@@ -32,7 +32,7 @@ Por lo que decidí acotarlo y enfocarme en:
 **❌ Dejados fuera del alcance:**
 
 - ❌ Costos de transacción
-- ❌ Tamaños mínimos de operación (minimum trade sizes)
+- ❌ Requerimientod de mantener un capital minimo
 
 Y por el lado de hacerlo interactivo
 

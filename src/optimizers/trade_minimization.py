@@ -57,6 +57,7 @@ class TradeMinimizationStrategy(RebalanceStrategy):
         target_allocation: dict[str, Decimal],
         total_value: Decimal,
         price_lookup: dict[str, Decimal] | None = None,
+        extra_cash: Decimal = Decimal("0"),
     ) -> list[RebalanceOrder]:
         price_lookup = price_lookup or {}
 
@@ -71,18 +72,19 @@ class TradeMinimizationStrategy(RebalanceStrategy):
         )
         target_weights = np.array([float(target_allocation[s]) for s in symbols])
         V = float(total_value)
+        budget = V + float(extra_cash)
         tol = float(self.tolerance)
 
-        M = self._compute_big_m(V, prices)
+        M = self._compute_big_m(budget, prices)
         num_vars = 4 * n
 
         result = milp(
-            c=self._build_objective(n),
+            c=self._build_objective(n, prices, budget),
             constraints=[
                 self._build_trade_balance_constraint(n, current_holdings),
                 self._build_indicator_constraint(n, M),
                 self._build_tolerance_constraint(n, prices, target_weights, tol, V),
-                self._build_budget_constraint(n, prices, V),
+                self._build_budget_constraint(n, prices, budget),
             ],
             integrality=np.ones(num_vars, dtype=int),
             bounds=self._build_variable_bounds(num_vars, n),
@@ -100,9 +102,11 @@ class TradeMinimizationStrategy(RebalanceStrategy):
         )
         return orders + self._liquidation_orders(holdings, target_allocation)
 
-    def _build_objective(self, n: int) -> np.ndarray:
+    def _build_objective(self, n: int, prices: np.ndarray, budget: float) -> np.ndarray:
         c = np.zeros(4 * n)
         c[3 * n:] = 1.0
+        epsilon = 0.5 / budget if budget > 0 else 0
+        c[:n] = -epsilon * prices
         return c
 
     def _compute_big_m(self, V: float, prices: np.ndarray) -> float:
